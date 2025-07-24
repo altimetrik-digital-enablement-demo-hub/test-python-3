@@ -1,0 +1,19 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: test-python-3
+  description: A short description of what the service does
+  tags:
+    - python
+    - fastapi
+    - restapi
+  annotations:
+    github.com/project-slug: altimetrik-digital-enablement-demo-hub/test-python-3
+    github.com/workflows: ci
+    backstage.io/source-location: url:https://github.com/altimetrik-digital-enablement-demo-hub/test-python-3
+    backstage.io/techdocs-ref: url:https://github.com/altimetrik-digital-enablement-demo-hub/test-python-3/tree/main
+    devbox.io/enabled: "true"
+spec:
+  type: service
+  lifecycle: development
+  owner: all_usa_engineering_dl

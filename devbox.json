@@ -1,0 +1,23 @@
+{
+  "packages": [
+    "python@3.11",
+    "poetry",
+    "pre-commit"
+  ],
+  "shell": {
+    "init_hook": [
+      "poetry install --no-root",
+      "pre-commit install",
+      "echo 'Devbox ready for test-python-3!'"
+    ],
+    "scripts": {
+      "start":      "poetry run uvicorn main:app --reload --port 8080",
+      "lint":       "poetry run flake8 app",
+      "format":     "poetry run black app",
+      "typecheck":  "poetry run mypy app",
+      "test":       "poetry run pytest",
+      "docs-serve": "poetry run mkdocs serve",
+      "docs-build": "poetry run mkdocs build"
+    }
+  }
+}

@@ -1,0 +1,18 @@
+[tool.poetry]
+name = " test-python-3"
+version = "0.1.0"
+description = " A short description of what the service does"
+authors = ["auto-generated <none@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.110"
+uvicorn = { extras = ["standard"], version = "^0.29" }
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4"
+httpx = "^0.27"
+mypy = "^1.10"
+flake8 = "^7.0"
+black = "^24.3"
+pre-commit = "^3.7"

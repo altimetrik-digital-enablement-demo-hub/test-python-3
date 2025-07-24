@@ -1,0 +1,218 @@
+name: ci
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    
+    outputs:
+      registry: ${{ steps.build-tag-push.outputs.registry }}
+      repository: ${{ steps.build-tag-push.outputs.repository }}
+      image_tag: ${{ steps.build-tag-push.outputs.image_tag }}
+    
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Poetry
+        run: |
+          curl -sSL https://install.python-poetry.org | python3 -
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/pypoetry
+            ~/.virtualenvs
+          key: "${{ runner.os }}-poetry-${{ hashFiles('**/poetry.lock') }}"
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+
+      - name: Run tests
+        run: poetry run pytest
+
+      - name: Lint
+        run: poetry run flake8 app
+
+      - name: Type check
+        run: poetry run mypy app
+
+      - name: Format check
+        run: poetry run black --check app
+
+      - name: Set image date
+        id: image_date
+        run: echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+
+      - name: Set image tag variables
+        id: imagevars
+        env:
+          TZ: America/New_York
+        run: |
+          RAW_BRANCH="${GITHUB_REF##*/}"
+          # Replace any character that is not a-z, A-Z, 0-9, - or _ with _
+          SAFE_BRANCH=$(echo "$RAW_BRANCH" | sed 's/[^a-zA-Z0-9_-]/_/g')
+          DATE=$(date +'%Y%m%d')
+          echo "branch=$SAFE_BRANCH" >> $GITHUB_OUTPUT
+          echo "date=$DATE" >> $GITHUB_OUTPUT
+          echo "repository_name=${GITHUB_REPOSITORY##*/}" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4 
+        with:
+          role-to-assume: arn:aws:iam::381492075615:role/GitHubActionsECRRole
+          aws-region: us-east-1
+
+      - name: Ensure ECR repository exists
+        env:
+          REPOSITORY: "${{ steps.imagevars.outputs.repository_name }}"
+        run: |
+          aws ecr describe-repositories --repository-names "${{ env.REPOSITORY }}" > /dev/null 2>&1 || \
+          aws ecr create-repository --repository-name "${{ env.REPOSITORY }}"
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push Docker image
+        id: build-tag-push
+        shell: bash
+        env: 
+          REGISTRY: "${{ steps.login-ecr.outputs.registry }}"
+          REPOSITORY: "${{ steps.imagevars.outputs.repository_name }}"
+          IMAGE_TAG: "${{ steps.imagevars.outputs.branch }}-${{ steps.imagevars.outputs.date }}.${{ github.run_number }}"
+          IMAGE_TAG_LATEST: "${{ steps.imagevars.outputs.branch }}-latest"
+        run: |
+          docker build --build-arg APP_VERSION=$IMAGE_TAG -t $REGISTRY/$REPOSITORY:$IMAGE_TAG .
+          docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG
+          docker tag $REGISTRY/$REPOSITORY:$IMAGE_TAG $REGISTRY/$REPOSITORY:$IMAGE_TAG_LATEST
+          docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG_LATEST
+
+          echo "### Docker Image Built and Pushed" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image:** $REGISTRY/$REPOSITORY" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag 1:** $IMAGE_TAG" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag 2:** $IMAGE_TAG_LATEST" >> $GITHUB_STEP_SUMMARY
+
+          echo "registry=$REGISTRY" >> $GITHUB_OUTPUT
+          echo "repository=$REPOSITORY" >> $GITHUB_OUTPUT
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "image_tag_latest=$IMAGE_TAG_LATEST" >> $GITHUB_OUTPUT
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:                
+
+      - name: Debug private key format
+        
+        env:
+          PRIVATE_KEY_VAR: "${{ secrets.GH_APP_PRIVATE_KEY }}"
+          APPID: ${{ secrets.GH_APP_ID }}
+          TEST_HARDCODED: ${{ secrets.TEST_HARDCODED }}
+          TEST_ENV_APPID: ${{ secrets.TEST_ENV_APPID }}
+          TEST_ENV_LOGLEVEL: ${{ secrets.TEST_ENV_LOGLEVEL }}
+        run: |
+          echo "Length of private key: ${#PRIVATE_KEY_VAR}"
+          echo "APPID (from secret):"
+          echo "${{ secrets.GH_APP_ID }}" | head -c 50
+          echo "APPID (from env):"
+          echo "${{ env.APPID }}" | head -c 50
+          echo "PRIVATE_KEY_VAR=$PRIVATE_KEY_VAR"
+          echo "PRIVATE_KEY First 50 characters:"
+          echo "${{ secrets.GH_APP_PRIVATE_KEY }}" | head -c 50
+          echo ""
+          echo "Last 50 characters:"
+          echo "${{ secrets.GH_APP_PRIVATE_KEY }}" | tail -c 50
+          echo ""
+          echo "Does it start with -----BEGIN?"
+          echo "${{ secrets.GH_APP_PRIVATE_KEY }}" | grep -o "^-----BEGIN" || echo "No"
+          echo "Number of lines:"
+          echo "${{ secrets.GH_APP_PRIVATE_KEY }}" | wc -l
+          echo "GH_APP_PRIVATE_KEY_B64:"
+          echo "${{ secrets.GH_APP_PRIVATE_KEY_B64 }}" | head -c 50
+          echo "GH_TEST_VAR:"
+          echo "${{ secrets.GH_TEST_VAR }}" | head -c 50
+          echo "GH_TEST_LOGLEVEL_VAR:"
+          echo "${{ secrets.GH_TEST_LOGLEVEL_VAR }}" | head -c 50
+          echo "APPID ${#APPID}: ${APPID}"
+          echo "${{ env.APPID }}" | head -c 50
+          echo "[${APPID}]" | head -c 50
+          echo "VAR1 ${#VAR1}: ${VAR1}"
+          echo "${{ env.VAR1 }}" | head -c 50
+          echo "[${VAR1}]" | head -c 50
+          echo "VAR2 (${#VAR2}): ${VAR2}:"
+          echo "${{ env.VAR2 }}" | head -c 50
+          echo "[${VAR2}]" | head -c 50
+          echo "VAR3 (${#VAR3}): ${VAR3}:"
+          echo "${{ env.VAR3 }}" | head -c 50
+          echo "[${VAR3}]" | head -c 50
+          
+          echo "TEST_HARDCODED (${#TEST_HARDCODED}): ${TEST_HARDCODED}"
+          echo "${{ secrets.TEST_HARDCODED }}" | head -c 50
+          echo "[${TEST_HARDCODED}]" | head -c 50
+
+          echo "TEST_ENV_APPID (${#TEST_ENV_APPID}): ${TEST_ENV_APPID}"
+          echo "${{ secrets.TEST_ENV_APPID }}" | head -c 50
+          echo "[${TEST_ENV_APPID}]" | head -c 50
+
+          echo "TEST_ENV_LOGLEVEL (${#TEST_ENV_LOGLEVEL}): ${TEST_ENV_LOGLEVEL}"
+          echo "${{ secrets.TEST_ENV_LOGLEVEL }}" | head -c 50
+          echo "[${TEST_ENV_LOGLEVEL}]" | head -c 50
+        
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: altimetrik-digital-enablement-demo-hub
+          repositories: org-gitops
+        
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v4
+        with:
+          repository: altimetrik-digital-enablement-demo-hub/org-gitops
+          ref: main
+          path: gitops
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Set new image in kustomization.yaml
+        env: 
+            REGISTRY: "${{ needs.build-and-push.outputs.registry }}"
+            REPOSITORY: "${{ needs.build-and-push.outputs.repository }}"
+            IMAGE_TAG: "${{ needs.build-and-push.outputs.image_tag }}" 
+        run: |
+          cd "gitops/apps/${{ env.REPOSITORY }}/envs/dev"
+          kustomize edit set image "${{ env.REGISTRY }}/${{ env.REPOSITORY }}:${{ env.IMAGE_TAG }}"
+
+      - name: Commit and push changes
+        env: 
+          IMAGE_TAG: "${{ needs.build-and-push.outputs.image_tag }}"
+          REPOSITORY: "${{ needs.build-and-push.outputs.repository }}"
+        run: |
+          cd gitops
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "apps/${{ env.REPOSITORY }}/envs/dev/kustomization.yaml" 
+          git commit -m "Update ${{ env.REPOSITORY }} image to ${{ env.IMAGE_TAG }}"
+          git push origin main
